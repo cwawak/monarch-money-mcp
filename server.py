@@ -70,6 +70,37 @@ mm_init_error: Optional[str] = None
 session_file = Path.home() / ".monarchmoney_session"
 
 
+def is_auth_error(exc: Exception) -> bool:
+    """Best-effort detection of Monarch auth/session expiration errors."""
+    msg = str(exc).lower()
+    markers = [
+        "401",
+        "unauthorized",
+        "http code 401",
+        "token",
+        "session",
+        "timed out",
+        "timeout",
+    ]
+    return any(marker in msg for marker in markers)
+
+
+async def refresh_client_session() -> None:
+    """Force a fresh client initialization for auth recovery."""
+    global mm_client, mm_init_error
+    mm_client = None
+    mm_init_error = None
+
+    # Drop stale cached session before re-auth to avoid looping on invalid token.
+    if session_file.exists():
+        try:
+            session_file.unlink()
+        except Exception:
+            pass
+
+    await initialize_client()
+
+
 async def initialize_client():
     """Initialize the MonarchMoney client with authentication."""
     global mm_client, mm_init_error
@@ -536,6 +567,9 @@ async def list_tools() -> List[Tool]:
 @server.call_tool()
 async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
     """Execute a tool and return the results."""
+    arguments = dict(arguments or {})
+    internal_retry = bool(arguments.pop("__auth_retry", False))
+
     init_error = await ensure_client_initialized()
     if init_error or not mm_client:
         return [TextContent(
@@ -680,6 +714,22 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
             return [TextContent(type="text", text=f"Error: Unknown tool '{name}'")]
     
     except Exception as e:
+        if is_auth_error(e) and not internal_retry:
+            print(
+                f"Detected auth/session error for {name}; re-authenticating and retrying once",
+                file=sys.stderr,
+            )
+            try:
+                await refresh_client_session()
+                retry_args = dict(arguments)
+                retry_args["__auth_retry"] = True
+                return await call_tool(name, retry_args)
+            except Exception as retry_error:
+                return [TextContent(
+                    type="text",
+                    text=f"Error executing {name} after re-auth attempt: {str(retry_error)}",
+                )]
+
         return [TextContent(type="text", text=f"Error executing {name}: {str(e)}")]
 
 
