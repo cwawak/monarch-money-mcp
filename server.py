@@ -4,6 +4,9 @@
 import os
 import asyncio
 import json
+import sys
+import re
+import calendar
 from typing import Any, Dict, Optional, List
 from datetime import datetime, date
 from pathlib import Path
@@ -14,6 +17,14 @@ from mcp.server.models import InitializationOptions
 from mcp.types import ServerCapabilities
 from mcp.types import Tool, TextContent
 from monarchmoney import MonarchMoney
+from monarchmoney.monarchmoney import MonarchMoneyEndpoints
+from gql import gql
+
+# Monarch migrated API host; keep overrideable for troubleshooting.
+MonarchMoneyEndpoints.BASE_URL = os.getenv(
+    "MONARCH_API_BASE_URL",
+    "https://api.monarch.com",
+).rstrip("/")
 
 
 def convert_dates_to_strings(obj: Any) -> Any:
@@ -35,24 +46,43 @@ def convert_dates_to_strings(obj: Any) -> Any:
     else:
         return obj
 
+
+def normalize_mfa_secret(secret: Optional[str]) -> Optional[str]:
+    """Normalize a TOTP secret and reject obviously invalid values."""
+    if not secret:
+        return None
+
+    cleaned = re.sub(r"[\s-]+", "", secret).upper()
+    if not cleaned:
+        return None
+
+    if not re.fullmatch(r"[A-Z2-7=]+", cleaned):
+        return None
+
+    return cleaned
+
 # Initialize the MCP server
 server = Server("monarch-money")
 
 # Global variable to store the MonarchMoney client
 mm_client: Optional[MonarchMoney] = None
+mm_init_error: Optional[str] = None
 session_file = Path.home() / ".monarchmoney_session"
 
 
 async def initialize_client():
     """Initialize the MonarchMoney client with authentication."""
-    global mm_client
+    global mm_client, mm_init_error
     
     email = os.getenv("MONARCH_EMAIL")
     password = os.getenv("MONARCH_PASSWORD")
-    mfa_secret = os.getenv("MONARCH_MFA_SECRET")
+    raw_mfa_secret = os.getenv("MONARCH_MFA_SECRET")
+    mfa_secret = normalize_mfa_secret(raw_mfa_secret)
     
     if not email or not password:
-        raise ValueError("MONARCH_EMAIL and MONARCH_PASSWORD environment variables are required")
+        mm_client = None
+        mm_init_error = "MONARCH_EMAIL and MONARCH_PASSWORD environment variables are required"
+        return
     
     mm_client = MonarchMoney()
     
@@ -62,20 +92,268 @@ async def initialize_client():
             mm_client.load_session(str(session_file))
             # Test if session is still valid
             await mm_client.get_accounts()
-            print("Loaded existing session successfully")
+            print("Loaded existing session successfully", file=sys.stderr)
+            mm_init_error = None
             return
         except Exception:
-            print("Existing session invalid, logging in fresh")
+            print("Existing session invalid, logging in fresh", file=sys.stderr)
+            # Reset client so stale auth headers from an invalid session
+            # are not sent during fresh login.
+            mm_client = MonarchMoney()
     
+    if raw_mfa_secret and not mfa_secret:
+        print(
+            "Ignoring MONARCH_MFA_SECRET because it is not a valid base32 secret",
+            file=sys.stderr,
+        )
+
     # Login with credentials
     if mfa_secret:
-        await mm_client.login(email, password, mfa_secret_key=mfa_secret)
+        try:
+            await mm_client.login(
+                email,
+                password,
+                use_saved_session=False,
+                save_session=False,
+                mfa_secret_key=mfa_secret,
+            )
+        except Exception as e:
+            if "Non-base32 digit found" not in str(e):
+                raise
+            print(
+                "MONARCH_MFA_SECRET failed base32 parsing; retrying without MFA secret",
+                file=sys.stderr,
+            )
+            await mm_client.login(
+                email,
+                password,
+                use_saved_session=False,
+                save_session=False,
+            )
     else:
-        await mm_client.login(email, password)
+        await mm_client.login(
+            email,
+            password,
+            use_saved_session=False,
+            save_session=False,
+        )
     
     # Save session for future use
     mm_client.save_session(str(session_file))
-    print("Logged in and saved session")
+    print("Logged in and saved session", file=sys.stderr)
+    mm_init_error = None
+
+
+async def ensure_client_initialized() -> Optional[str]:
+    """Lazily initialize the client and return an error message if unavailable."""
+    global mm_client, mm_init_error
+    if mm_client is not None:
+        return None
+
+    try:
+        await initialize_client()
+    except Exception as e:
+        mm_client = None
+        mm_init_error = str(e)
+
+    return mm_init_error
+
+
+def resolve_budget_date_range(start_date: Optional[str], end_date: Optional[str]) -> Dict[str, str]:
+    """Resolve budget range to explicit ISO dates, matching upstream defaults."""
+    if bool(start_date) != bool(end_date):
+        raise ValueError("You must specify both start_date and end_date, not just one of them.")
+
+    if start_date and end_date:
+        return {"startDate": start_date, "endDate": end_date}
+
+    today = datetime.today()
+
+    last_month = today.month - 1
+    last_month_year = today.year
+    if last_month < 1:
+        last_month_year -= 1
+        last_month = 12
+    resolved_start = datetime(last_month_year, last_month, 1).strftime("%Y-%m-%d")
+
+    next_month = today.month + 1
+    next_month_year = today.year
+    if next_month > 12:
+        next_month_year += 1
+        next_month = 1
+    last_day_of_next_month = calendar.monthrange(next_month_year, next_month)[1]
+    resolved_end = datetime(next_month_year, next_month, last_day_of_next_month).strftime("%Y-%m-%d")
+
+    return {"startDate": resolved_start, "endDate": resolved_end}
+
+
+async def get_budgets_lite(start_date: Optional[str], end_date: Optional[str]) -> Dict[str, Any]:
+    """Query budget data without unstable top-level fields that currently error."""
+    if not mm_client:
+        raise RuntimeError("MonarchMoney client not initialized")
+
+    variables = resolve_budget_date_range(start_date, end_date)
+    query = gql(
+        """
+        query GetBudgetDataLite($startDate: Date!, $endDate: Date!) {
+          budgetData(startMonth: $startDate, endMonth: $endDate) {
+            monthlyAmountsByCategory {
+              category {
+                id
+                __typename
+              }
+              monthlyAmounts {
+                month
+                plannedCashFlowAmount
+                plannedSetAsideAmount
+                actualAmount
+                remainingAmount
+                previousMonthRolloverAmount
+                rolloverType
+                __typename
+              }
+              __typename
+            }
+            monthlyAmountsByCategoryGroup {
+              categoryGroup {
+                id
+                __typename
+              }
+              monthlyAmounts {
+                month
+                plannedCashFlowAmount
+                actualAmount
+                remainingAmount
+                previousMonthRolloverAmount
+                rolloverType
+                __typename
+              }
+              __typename
+            }
+            monthlyAmountsForFlexExpense {
+              budgetVariability
+              monthlyAmounts {
+                month
+                plannedCashFlowAmount
+                actualAmount
+                remainingAmount
+                previousMonthRolloverAmount
+                rolloverType
+                __typename
+              }
+              __typename
+            }
+            totalsByMonth {
+              month
+              totalIncome {
+                plannedAmount
+                actualAmount
+                remainingAmount
+                previousMonthRolloverAmount
+                __typename
+              }
+              totalExpenses {
+                plannedAmount
+                actualAmount
+                remainingAmount
+                previousMonthRolloverAmount
+                __typename
+              }
+              totalFixedExpenses {
+                plannedAmount
+                actualAmount
+                remainingAmount
+                previousMonthRolloverAmount
+                __typename
+              }
+              totalNonMonthlyExpenses {
+                plannedAmount
+                actualAmount
+                remainingAmount
+                previousMonthRolloverAmount
+                __typename
+              }
+              totalFlexibleExpenses {
+                plannedAmount
+                actualAmount
+                remainingAmount
+                previousMonthRolloverAmount
+                __typename
+              }
+              __typename
+            }
+            __typename
+          }
+        }
+        """
+    )
+
+    budget_payload = await mm_client.gql_call(
+        operation="GetBudgetDataLite",
+        graphql_query=query,
+        variables=variables,
+    )
+
+    budget_data = budget_payload.get("budgetData", {}) if isinstance(budget_payload, dict) else {}
+
+    categories_by_id: Dict[str, Dict[str, Any]] = {}
+    groups_by_id: Dict[str, Dict[str, Any]] = {}
+    try:
+        categories_payload = await mm_client.get_transaction_categories()
+        categories = categories_payload.get("categories", []) if isinstance(categories_payload, dict) else []
+        for cat in categories:
+            cat_id = cat.get("id")
+            group = cat.get("group") or {}
+            if cat_id:
+                categories_by_id[cat_id] = {
+                    "id": cat_id,
+                    "name": cat.get("name"),
+                    "group": {
+                        "id": group.get("id"),
+                        "name": group.get("name"),
+                        "type": group.get("type"),
+                    },
+                }
+            group_id = group.get("id")
+            if group_id and group_id not in groups_by_id:
+                groups_by_id[group_id] = {
+                    "id": group_id,
+                    "name": group.get("name"),
+                    "type": group.get("type"),
+                }
+    except Exception:
+        # Budget payload is still useful even if category metadata lookup fails.
+        categories_by_id = {}
+        groups_by_id = {}
+
+    for row in budget_data.get("monthlyAmountsByCategory", []) if isinstance(budget_data, dict) else []:
+        category = row.get("category") or {}
+        category_id = category.get("id")
+        meta = categories_by_id.get(category_id)
+        if meta:
+            row["category"] = {
+                **category,
+                "name": meta.get("name"),
+                "group": meta.get("group"),
+            }
+
+    for row in budget_data.get("monthlyAmountsByCategoryGroup", []) if isinstance(budget_data, dict) else []:
+        group = row.get("categoryGroup") or {}
+        group_id = group.get("id")
+        meta = groups_by_id.get(group_id)
+        if meta:
+            row["categoryGroup"] = {
+                **group,
+                "name": meta.get("name"),
+                "type": meta.get("type"),
+            }
+
+    return {
+        "startDate": variables["startDate"],
+        "endDate": variables["endDate"],
+        "budgetData": budget_data,
+        "source": "GetBudgetDataLite",
+    }
 
 
 # Tool definitions
@@ -258,8 +536,15 @@ async def list_tools() -> List[Tool]:
 @server.call_tool()
 async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
     """Execute a tool and return the results."""
-    if not mm_client:
-        return [TextContent(type="text", text="Error: MonarchMoney client not initialized")]
+    init_error = await ensure_client_initialized()
+    if init_error or not mm_client:
+        return [TextContent(
+            type="text",
+            text=(
+                "Error: MonarchMoney client not initialized. "
+                f"Authentication/connection failed: {init_error or 'unknown error'}"
+            ),
+        )]
     
     try:
         if name == "get_accounts":
@@ -272,9 +557,13 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
             # Build filter parameters
             filters = {}
             if "start_date" in arguments:
-                filters["start_date"] = datetime.strptime(arguments["start_date"], "%Y-%m-%d").date()
+                filters["start_date"] = datetime.strptime(
+                    arguments["start_date"], "%Y-%m-%d"
+                ).date().isoformat()
             if "end_date" in arguments:
-                filters["end_date"] = datetime.strptime(arguments["end_date"], "%Y-%m-%d").date()
+                filters["end_date"] = datetime.strptime(
+                    arguments["end_date"], "%Y-%m-%d"
+                ).date().isoformat()
             if "account_id" in arguments:
                 filters["account_id"] = arguments["account_id"]
             if "category_id" in arguments:
@@ -292,32 +581,48 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
         elif name == "get_budgets":
             kwargs = {}
             if "start_date" in arguments:
-                kwargs["start_date"] = datetime.strptime(arguments["start_date"], "%Y-%m-%d").date()
+                kwargs["start_date"] = datetime.strptime(
+                    arguments["start_date"], "%Y-%m-%d"
+                ).date().isoformat()
             if "end_date" in arguments:
-                kwargs["end_date"] = datetime.strptime(arguments["end_date"], "%Y-%m-%d").date()
+                kwargs["end_date"] = datetime.strptime(
+                    arguments["end_date"], "%Y-%m-%d"
+                ).date().isoformat()
             
             try:
-                budgets = await mm_client.get_budgets(**kwargs)
-                # Convert date objects to strings before serialization
+                budgets = await get_budgets_lite(
+                    kwargs.get("start_date"),
+                    kwargs.get("end_date"),
+                )
                 budgets = convert_dates_to_strings(budgets)
                 return [TextContent(type="text", text=json.dumps(budgets, indent=2))]
-            except Exception as e:
-                # Handle the case where no budgets exist
-                if "Something went wrong while processing: None" in str(e):
-                    return [TextContent(type="text", text=json.dumps({
-                        "budgets": [],
-                        "message": "No budgets configured in your Monarch Money account"
-                    }, indent=2))]
-                else:
-                    # Re-raise other errors
-                    raise
+            except Exception as lite_error:
+                # Fall back to upstream helper in case Monarch schema changes again.
+                try:
+                    budgets = await mm_client.get_budgets(**kwargs)
+                    budgets = convert_dates_to_strings(budgets)
+                    return [TextContent(type="text", text=json.dumps(budgets, indent=2))]
+                except Exception as upstream_error:
+                    if (
+                        "Something went wrong while processing: None" in str(lite_error)
+                        and "Something went wrong while processing: None" in str(upstream_error)
+                    ):
+                        return [TextContent(type="text", text=json.dumps({
+                            "budgets": [],
+                            "message": "No budgets configured in your Monarch Money account"
+                        }, indent=2))]
+                    raise upstream_error
         
         elif name == "get_cashflow":
             kwargs = {}
             if "start_date" in arguments:
-                kwargs["start_date"] = datetime.strptime(arguments["start_date"], "%Y-%m-%d").date()
+                kwargs["start_date"] = datetime.strptime(
+                    arguments["start_date"], "%Y-%m-%d"
+                ).date().isoformat()
             if "end_date" in arguments:
-                kwargs["end_date"] = datetime.strptime(arguments["end_date"], "%Y-%m-%d").date()
+                kwargs["end_date"] = datetime.strptime(
+                    arguments["end_date"], "%Y-%m-%d"
+                ).date().isoformat()
             
             cashflow = await mm_client.get_cashflow(**kwargs)
             # Convert date objects to strings before serialization
@@ -380,13 +685,11 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
 
 async def main():
     """Main entry point for the server."""
-    # Initialize the MonarchMoney client
-    try:
-        await initialize_client()
-    except Exception as e:
-        print(f"Failed to initialize MonarchMoney client: {e}")
-        return
-    
+    print(
+        f"Using Monarch API base URL: {MonarchMoneyEndpoints.BASE_URL}",
+        file=sys.stderr,
+    )
+
     # Run the MCP server
     async with stdio_server() as (read_stream, write_stream):
         await server.run(
