@@ -191,6 +191,71 @@ def apply_transaction_post_filters(
     return updated_transactions
 
 
+def maybe_strip_transaction_rules(transactions: Any, include_transaction_rules: bool) -> Any:
+    """Drop heavy transactionRules payload by default to reduce MCP output size."""
+    if include_transaction_rules:
+        return transactions
+
+    if (
+        isinstance(transactions, dict)
+        and isinstance(transactions.get("transactionRules"), list)
+    ):
+        slim_transactions = dict(transactions)
+        slim_transactions.pop("transactionRules", None)
+        return slim_transactions
+
+    return transactions
+
+
+def build_compact_transaction_results(transactions: Any) -> Dict[str, Any]:
+    """Project Monarch transaction payload into concise agent-friendly rows."""
+    if not isinstance(transactions, dict):
+        return {"totalCount": 0, "returnedCount": 0, "results": []}
+
+    all_transactions = transactions.get("allTransactions")
+    if not isinstance(all_transactions, dict):
+        return {"totalCount": 0, "returnedCount": 0, "results": []}
+
+    results = all_transactions.get("results")
+    if not isinstance(results, list):
+        results = []
+
+    compact_results: List[Dict[str, Any]] = []
+    for txn in results:
+        if not isinstance(txn, dict):
+            continue
+
+        merchant = txn.get("merchant") if isinstance(txn.get("merchant"), dict) else {}
+        category = txn.get("category") if isinstance(txn.get("category"), dict) else {}
+        account = txn.get("account") if isinstance(txn.get("account"), dict) else {}
+
+        compact_results.append({
+            "id": txn.get("id"),
+            "date": txn.get("date"),
+            "amount": txn.get("amount"),
+            "merchant_id": merchant.get("id"),
+            "merchant_name": merchant.get("name"),
+            "plaid_name": txn.get("plaidName"),
+            "category_id": category.get("id"),
+            "category_name": category.get("name"),
+            "account_id": account.get("id"),
+            "account_name": account.get("displayName"),
+            "is_recurring": txn.get("isRecurring"),
+            "pending": txn.get("pending"),
+            "notes": txn.get("notes"),
+        })
+
+    total_count = all_transactions.get("totalCount")
+    if not isinstance(total_count, int):
+        total_count = len(compact_results)
+
+    return {
+        "totalCount": total_count,
+        "returnedCount": len(compact_results),
+        "results": compact_results,
+    }
+
+
 # Initialize the MCP server
 server = Server("monarch-money")
 
@@ -632,6 +697,112 @@ async def list_tools() -> List[Tool]:
             }
         ),
         Tool(
+            name="search_transactions",
+            description="Search transactions and return concise projected rows",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "search": {
+                        "type": "string",
+                        "description": "Search text (merchant/description); for example, 'youtube'"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of transactions to return before projection",
+                        "default": 25
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Number of transactions to skip",
+                        "default": 0
+                    },
+                    "start_date": {
+                        "type": "string",
+                        "description": "Start date in YYYY-MM-DD format"
+                    },
+                    "end_date": {
+                        "type": "string",
+                        "description": "End date in YYYY-MM-DD format"
+                    },
+                    "account_id": {
+                        "type": "string",
+                        "description": "Filter by specific account ID"
+                    },
+                    "account_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Filter by one or more account IDs"
+                    },
+                    "category_id": {
+                        "type": "string",
+                        "description": "Filter by specific category ID"
+                    },
+                    "category_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Filter by one or more category IDs"
+                    },
+                    "tag_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Filter by one or more transaction tag IDs"
+                    },
+                    "has_attachments": {
+                        "type": "boolean",
+                        "description": "Filter for transactions with or without attachments"
+                    },
+                    "has_notes": {
+                        "type": "boolean",
+                        "description": "Filter for transactions with or without notes"
+                    },
+                    "hidden_from_reports": {
+                        "type": "boolean",
+                        "description": "Filter by hide-from-reports status"
+                    },
+                    "is_split": {
+                        "type": "boolean",
+                        "description": "Filter by split transaction status"
+                    },
+                    "is_recurring": {
+                        "type": "boolean",
+                        "description": "Filter by recurring transaction status"
+                    },
+                    "imported_from_mint": {
+                        "type": "boolean",
+                        "description": "Filter by imported-from-Mint status"
+                    },
+                    "synced_from_institution": {
+                        "type": "boolean",
+                        "description": "Filter by institution-sync status"
+                    },
+                    "merchant_id": {
+                        "type": "string",
+                        "description": "Post-fetch filter: keep only transactions whose merchant.id matches this value"
+                    },
+                    "amount_min": {
+                        "type": "number",
+                        "description": "Post-fetch filter: keep only transactions with amount >= this value"
+                    },
+                    "amount_max": {
+                        "type": "number",
+                        "description": "Post-fetch filter: keep only transactions with amount <= this value"
+                    },
+                    "include_transaction_rules": {
+                        "type": "boolean",
+                        "description": "Include transactionRules in raw payload (default false)",
+                        "default": False
+                    },
+                    "include_raw": {
+                        "type": "boolean",
+                        "description": "Include raw upstream payload alongside concise rows",
+                        "default": False
+                    }
+                },
+                "required": ["search"],
+                "additionalProperties": False
+            }
+        ),
+        Tool(
             name="get_budgets",
             description="Retrieve budget information",
             inputSchema={
@@ -670,6 +841,35 @@ async def list_tools() -> List[Tool]:
         Tool(
             name="get_transaction_categories",
             description="List all transaction categories",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False
+            }
+        ),
+        Tool(
+            name="get_transaction_details",
+            description="Fetch detailed information for a single transaction",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "transaction_id": {
+                        "type": "string",
+                        "description": "ID of the transaction to fetch"
+                    },
+                    "redirect_posted": {
+                        "type": "boolean",
+                        "description": "If true, redirect pending transactions to posted counterpart when available",
+                        "default": True
+                    }
+                },
+                "required": ["transaction_id"],
+                "additionalProperties": False
+            }
+        ),
+        Tool(
+            name="get_transaction_tags",
+            description="List all available transaction tags",
             inputSchema={
                 "type": "object",
                 "properties": {},
@@ -797,20 +997,38 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
                 amount_max=arguments.get("amount_max"),
             )
 
-            # Reduce payload size by default; transactionRules can be very large and
-            # usually aren't needed for analysis prompts.
             include_transaction_rules = bool(arguments.get("include_transaction_rules", False))
-            if (
-                not include_transaction_rules
-                and isinstance(transactions, dict)
-                and isinstance(transactions.get("transactionRules"), list)
-            ):
-                transactions = dict(transactions)
-                transactions.pop("transactionRules", None)
+            transactions = maybe_strip_transaction_rules(transactions, include_transaction_rules)
 
             # Convert date objects to strings before serialization
             transactions = convert_dates_to_strings(transactions)
             return [TextContent(type="text", text=json.dumps(transactions, indent=2))]
+
+        elif name == "search_transactions":
+            filters = build_transaction_filters(arguments)
+
+            transactions = await mm_client.get_transactions(
+                limit=arguments.get("limit", 25),
+                offset=arguments.get("offset", 0),
+                **filters,
+            )
+
+            transactions = apply_transaction_post_filters(
+                transactions,
+                merchant_id=arguments.get("merchant_id"),
+                amount_min=arguments.get("amount_min"),
+                amount_max=arguments.get("amount_max"),
+            )
+
+            include_transaction_rules = bool(arguments.get("include_transaction_rules", False))
+            transactions = maybe_strip_transaction_rules(transactions, include_transaction_rules)
+
+            response: Dict[str, Any] = build_compact_transaction_results(transactions)
+            if bool(arguments.get("include_raw", False)):
+                response["raw"] = transactions
+
+            response = convert_dates_to_strings(response)
+            return [TextContent(type="text", text=json.dumps(response, indent=2))]
         
         elif name == "get_budgets":
             kwargs = {}
@@ -868,6 +1086,19 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
             # Convert date objects to strings before serialization
             categories = convert_dates_to_strings(categories)
             return [TextContent(type="text", text=json.dumps(categories, indent=2))]
+
+        elif name == "get_transaction_details":
+            details = await mm_client.get_transaction_details(
+                transaction_id=arguments["transaction_id"],
+                redirect_posted=arguments.get("redirect_posted", True),
+            )
+            details = convert_dates_to_strings(details)
+            return [TextContent(type="text", text=json.dumps(details, indent=2))]
+
+        elif name == "get_transaction_tags":
+            tags = await mm_client.get_transaction_tags()
+            tags = convert_dates_to_strings(tags)
+            return [TextContent(type="text", text=json.dumps(tags, indent=2))]
         
         elif name == "create_transaction":
             # Convert date string to date object

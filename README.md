@@ -86,23 +86,37 @@ Get transactions with optional filtering:
 - `include_transaction_rules`: Include heavy `transactionRules` array (defaults to `false` to keep responses smaller)
 - `limit`: Maximum number of transactions to return
 
-### `get_categories`
+### `search_transactions`
+Search transactions and return concise projected rows (lower-token output by default):
+- Supports the same filter set as `get_transactions`
+- `search` is required
+- `include_raw`: optionally include raw upstream payload in the response
+
+### `get_transaction_categories`
 List all transaction categories.
+
+### `get_transaction_details`
+Get a full payload for a single transaction:
+- `transaction_id` (required)
+- `redirect_posted` (optional, default `true`)
+
+### `get_transaction_tags`
+List all transaction tags.
 
 ### `get_budgets`
 Get budget information and spending analysis.
 
-### `get_goals`
-List financial goals and their progress.
-
 ### `get_cashflow`
 Get cashflow data for income and expense analysis.
 
-### `get_investments`
-Get investment account details and performance.
+### `create_transaction`
+Create a transaction.
 
-### `get_net_worth`
-Get net worth snapshots over time.
+### `update_transaction`
+Update an existing transaction.
+
+### `refresh_accounts`
+Request a refresh of account data from financial institutions.
 
 ## Usage Examples
 
@@ -139,6 +153,17 @@ Use get_transactions with is_recurring true, has_notes false, and tag_ids ["tag_
 ### Post-Fetch Filters
 ```
 Use get_transactions with search "youtube", merchant_id "merchant_123", amount_min -100, and amount_max -20.
+```
+
+### Concise Search Tool
+```
+Use search_transactions with search "youtube", start_date "2025-11-01", end_date "2026-02-28", and limit 25.
+```
+
+### Transaction Details and Tags
+```
+Use get_transaction_details with transaction_id "234753196995832652".
+Use get_transaction_tags to list available tag IDs.
 ```
 
 ### Budget Tracking
