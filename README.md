@@ -5,7 +5,7 @@ An MCP (Model Context Protocol) server that provides access to Monarch Money fin
 ## Features
 
 - **Account Management**: List and retrieve account information
-- **Transaction Operations**: Get transactions with filtering by date range, accounts, and categories
+- **Transaction Operations**: Get transactions with filtering by date range, text search, accounts, and categories
 - **Budget Analysis**: Access budget data and spending insights
 - **Category Management**: List and manage transaction categories
 - **Goal Tracking**: Access financial goals and progress
@@ -67,27 +67,58 @@ List all accounts with their balances and details.
 Get transactions with optional filtering:
 - `start_date`: Filter transactions from this date (YYYY-MM-DD)
 - `end_date`: Filter transactions to this date (YYYY-MM-DD)
-- `account_ids`: List of account IDs to filter by
-- `category_ids`: List of category IDs to filter by
+- Date rule: provide both `start_date` and `end_date`, or omit both
+- `search`: Filter by merchant/transaction text (for example, `youtube`)
+- `account_id`: Filter by one account ID (backwards-compatible)
+- `account_ids`: Filter by multiple account IDs
+- `category_id`: Filter by one category ID (backwards-compatible)
+- `category_ids`: Filter by multiple category IDs
+- `tag_ids`: Filter by one or more transaction tag IDs
+- `has_attachments`: Filter by attachment presence
+- `has_notes`: Filter by notes presence
+- `hidden_from_reports`: Filter by hide-from-reports status
+- `is_split`: Filter by split transaction status
+- `is_recurring`: Filter by recurring transaction status
+- `imported_from_mint`: Filter by imported-from-Mint status
+- `synced_from_institution`: Filter by institution-sync status
+- `merchant_id`: Post-fetch filter for exact `merchant.id`
+- `amount_min`: Post-fetch filter for minimum transaction amount (signed amount)
+- `amount_max`: Post-fetch filter for maximum transaction amount (signed amount)
+- `include_transaction_rules`: Include heavy `transactionRules` array (defaults to `false` to keep responses smaller)
 - `limit`: Maximum number of transactions to return
 
-### `get_categories`
+### `search_transactions`
+Search transactions and return concise projected rows (lower-token output by default):
+- Supports the same filter set as `get_transactions`
+- `search` is required
+- `include_raw`: optionally include raw upstream payload in the response
+- Date rule: provide both `start_date` and `end_date`, or omit both
+
+### `get_transaction_categories`
 List all transaction categories.
+
+### `get_transaction_details`
+Get a full payload for a single transaction:
+- `transaction_id` (required)
+- `redirect_posted` (optional, default `true`)
+
+### `get_transaction_tags`
+List all transaction tags.
 
 ### `get_budgets`
 Get budget information and spending analysis.
 
-### `get_goals`
-List financial goals and their progress.
-
 ### `get_cashflow`
 Get cashflow data for income and expense analysis.
 
-### `get_investments`
-Get investment account details and performance.
+### `create_transaction`
+Create a transaction.
 
-### `get_net_worth`
-Get net worth snapshots over time.
+### `update_transaction`
+Update an existing transaction.
+
+### `refresh_accounts`
+Request a refresh of account data from financial institutions.
 
 ## Usage Examples
 
@@ -99,6 +130,42 @@ Use the get_accounts tool to see all my accounts and their current balances.
 ### Transaction Analysis
 ```
 Get all transactions from January 2024 using get_transactions with start_date "2024-01-01" and end_date "2024-01-31".
+```
+
+### Transaction Search (Low-Volume)
+```
+Use get_transactions with search "youtube", start_date "2024-01-01", end_date "2024-12-31", and limit 25.
+```
+
+### Include Raw Transaction Rules (Optional)
+```
+Use get_transactions with search "youtube", limit 25, and include_transaction_rules true.
+```
+
+### Singular and Plural ID Filters
+```
+Use get_transactions with account_id "acc_123" and category_ids ["cat_1", "cat_2"].
+```
+
+### Boolean and Tag Filters
+```
+Use get_transactions with is_recurring true, has_notes false, and tag_ids ["tag_1", "tag_2"].
+```
+
+### Post-Fetch Filters
+```
+Use get_transactions with search "youtube", merchant_id "merchant_123", amount_min -100, and amount_max -20.
+```
+
+### Concise Search Tool
+```
+Use search_transactions with search "youtube", start_date "2025-11-01", end_date "2026-02-28", and limit 25.
+```
+
+### Transaction Details and Tags
+```
+Use get_transaction_details with transaction_id "234753196995832652".
+Use get_transaction_tags to list available tag IDs.
 ```
 
 ### Budget Tracking
