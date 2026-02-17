@@ -80,6 +80,117 @@ def merge_id_filters(plural_value: Any, singular_value: Optional[str]) -> List[s
     return list(dict.fromkeys(merged_ids))
 
 
+TRANSACTION_BOOLEAN_FILTER_KEYS = (
+    "has_attachments",
+    "has_notes",
+    "hidden_from_reports",
+    "is_split",
+    "is_recurring",
+    "imported_from_mint",
+    "synced_from_institution",
+)
+
+
+def build_transaction_filters(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Build upstream transaction filters supported by monarchmoney."""
+    filters: Dict[str, Any] = {}
+
+    if "start_date" in arguments:
+        filters["start_date"] = datetime.strptime(
+            arguments["start_date"], "%Y-%m-%d"
+        ).date().isoformat()
+    if "end_date" in arguments:
+        filters["end_date"] = datetime.strptime(
+            arguments["end_date"], "%Y-%m-%d"
+        ).date().isoformat()
+    if "search" in arguments:
+        filters["search"] = arguments["search"]
+
+    account_ids = merge_id_filters(
+        arguments.get("account_ids"),
+        arguments.get("account_id"),
+    )
+    if account_ids:
+        filters["account_ids"] = account_ids
+
+    category_ids = merge_id_filters(
+        arguments.get("category_ids"),
+        arguments.get("category_id"),
+    )
+    if category_ids:
+        filters["category_ids"] = category_ids
+
+    tag_ids = merge_id_filters(arguments.get("tag_ids"), None)
+    if tag_ids:
+        filters["tag_ids"] = tag_ids
+
+    for key in TRANSACTION_BOOLEAN_FILTER_KEYS:
+        if key in arguments:
+            filters[key] = arguments[key]
+
+    return filters
+
+
+def apply_transaction_post_filters(
+    transactions: Any,
+    merchant_id: Optional[str],
+    amount_min: Optional[float],
+    amount_max: Optional[float],
+) -> Any:
+    """
+    Apply local post-fetch transaction filtering for fields not supported upstream.
+
+    Current post-filters:
+    - merchant_id
+    - amount_min
+    - amount_max
+    """
+    if merchant_id is None and amount_min is None and amount_max is None:
+        return transactions
+
+    if amount_min is not None and amount_max is not None and amount_min > amount_max:
+        raise ValueError("amount_min cannot be greater than amount_max")
+
+    if not isinstance(transactions, dict):
+        return transactions
+
+    all_transactions = transactions.get("allTransactions")
+    if not isinstance(all_transactions, dict):
+        return transactions
+
+    results = all_transactions.get("results")
+    if not isinstance(results, list):
+        return transactions
+
+    def matches_post_filters(txn: Any) -> bool:
+        if not isinstance(txn, dict):
+            return False
+
+        if merchant_id:
+            merchant = txn.get("merchant")
+            merchant_value = merchant.get("id") if isinstance(merchant, dict) else None
+            if merchant_value != merchant_id:
+                return False
+
+        amount = txn.get("amount")
+        if amount_min is not None:
+            if not isinstance(amount, (int, float)) or float(amount) < amount_min:
+                return False
+        if amount_max is not None:
+            if not isinstance(amount, (int, float)) or float(amount) > amount_max:
+                return False
+
+        return True
+
+    filtered_results = [txn for txn in results if matches_post_filters(txn)]
+    updated_transactions = dict(transactions)
+    updated_all_transactions = dict(all_transactions)
+    updated_all_transactions["results"] = filtered_results
+    updated_all_transactions["totalCount"] = len(filtered_results)
+    updated_transactions["allTransactions"] = updated_all_transactions
+    return updated_transactions
+
+
 # Initialize the MCP server
 server = Server("monarch-money")
 
@@ -466,6 +577,51 @@ async def list_tools() -> List[Tool]:
                         "items": {"type": "string"},
                         "description": "Filter by one or more category IDs"
                     },
+                    "tag_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Filter by one or more transaction tag IDs"
+                    },
+                    "has_attachments": {
+                        "type": "boolean",
+                        "description": "Filter for transactions with or without attachments"
+                    },
+                    "has_notes": {
+                        "type": "boolean",
+                        "description": "Filter for transactions with or without notes"
+                    },
+                    "hidden_from_reports": {
+                        "type": "boolean",
+                        "description": "Filter by hide-from-reports status"
+                    },
+                    "is_split": {
+                        "type": "boolean",
+                        "description": "Filter by split transaction status"
+                    },
+                    "is_recurring": {
+                        "type": "boolean",
+                        "description": "Filter by recurring transaction status"
+                    },
+                    "imported_from_mint": {
+                        "type": "boolean",
+                        "description": "Filter by imported-from-Mint status"
+                    },
+                    "synced_from_institution": {
+                        "type": "boolean",
+                        "description": "Filter by institution-sync status"
+                    },
+                    "merchant_id": {
+                        "type": "string",
+                        "description": "Post-fetch filter: keep only transactions whose merchant.id matches this value"
+                    },
+                    "amount_min": {
+                        "type": "number",
+                        "description": "Post-fetch filter: keep only transactions with amount >= this value"
+                    },
+                    "amount_max": {
+                        "type": "number",
+                        "description": "Post-fetch filter: keep only transactions with amount <= this value"
+                    },
                     "include_transaction_rules": {
                         "type": "boolean",
                         "description": "Include transactionRules in response payload (default false to reduce output size)",
@@ -626,38 +782,19 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
             return [TextContent(type="text", text=json.dumps(accounts, indent=2))]
         
         elif name == "get_transactions":
-            # Build filter parameters
-            filters = {}
-            if "start_date" in arguments:
-                filters["start_date"] = datetime.strptime(
-                    arguments["start_date"], "%Y-%m-%d"
-                ).date().isoformat()
-            if "end_date" in arguments:
-                filters["end_date"] = datetime.strptime(
-                    arguments["end_date"], "%Y-%m-%d"
-                ).date().isoformat()
-
-            if "search" in arguments:
-                filters["search"] = arguments["search"]
-
-            account_ids = merge_id_filters(
-                arguments.get("account_ids"),
-                arguments.get("account_id"),
-            )
-            if account_ids:
-                filters["account_ids"] = account_ids
-
-            category_ids = merge_id_filters(
-                arguments.get("category_ids"),
-                arguments.get("category_id"),
-            )
-            if category_ids:
-                filters["category_ids"] = category_ids
+            filters = build_transaction_filters(arguments)
             
             transactions = await mm_client.get_transactions(
                 limit=arguments.get("limit", 100),
                 offset=arguments.get("offset", 0),
                 **filters
+            )
+
+            transactions = apply_transaction_post_filters(
+                transactions,
+                merchant_id=arguments.get("merchant_id"),
+                amount_min=arguments.get("amount_min"),
+                amount_max=arguments.get("amount_max"),
             )
 
             # Reduce payload size by default; transactionRules can be very large and
