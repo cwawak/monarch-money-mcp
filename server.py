@@ -61,6 +61,25 @@ def normalize_mfa_secret(secret: Optional[str]) -> Optional[str]:
 
     return cleaned
 
+
+def merge_id_filters(plural_value: Any, singular_value: Optional[str]) -> List[str]:
+    """Merge singular/plural ID filters into a de-duplicated list."""
+    merged_ids: List[str] = []
+
+    if isinstance(plural_value, list):
+        merged_ids.extend(
+            item for item in plural_value
+            if isinstance(item, str) and item
+        )
+    elif isinstance(plural_value, str) and plural_value:
+        merged_ids.append(plural_value)
+
+    if isinstance(singular_value, str) and singular_value:
+        merged_ids.append(singular_value)
+
+    return list(dict.fromkeys(merged_ids))
+
+
 # Initialize the MCP server
 server = Server("monarch-money")
 
@@ -425,13 +444,32 @@ async def list_tools() -> List[Tool]:
                         "type": "string",
                         "description": "End date in YYYY-MM-DD format"
                     },
+                    "search": {
+                        "type": "string",
+                        "description": "Filter by merchant/transaction text (for example, 'YouTube TV')"
+                    },
                     "account_id": {
                         "type": "string",
                         "description": "Filter by specific account ID"
                     },
+                    "account_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Filter by one or more account IDs"
+                    },
                     "category_id": {
                         "type": "string",
                         "description": "Filter by specific category ID"
+                    },
+                    "category_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Filter by one or more category IDs"
+                    },
+                    "include_transaction_rules": {
+                        "type": "boolean",
+                        "description": "Include transactionRules in response payload (default false to reduce output size)",
+                        "default": False
                     }
                 },
                 "additionalProperties": False
@@ -598,16 +636,41 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
                 filters["end_date"] = datetime.strptime(
                     arguments["end_date"], "%Y-%m-%d"
                 ).date().isoformat()
-            if "account_id" in arguments:
-                filters["account_id"] = arguments["account_id"]
-            if "category_id" in arguments:
-                filters["category_id"] = arguments["category_id"]
+
+            if "search" in arguments:
+                filters["search"] = arguments["search"]
+
+            account_ids = merge_id_filters(
+                arguments.get("account_ids"),
+                arguments.get("account_id"),
+            )
+            if account_ids:
+                filters["account_ids"] = account_ids
+
+            category_ids = merge_id_filters(
+                arguments.get("category_ids"),
+                arguments.get("category_id"),
+            )
+            if category_ids:
+                filters["category_ids"] = category_ids
             
             transactions = await mm_client.get_transactions(
                 limit=arguments.get("limit", 100),
                 offset=arguments.get("offset", 0),
                 **filters
             )
+
+            # Reduce payload size by default; transactionRules can be very large and
+            # usually aren't needed for analysis prompts.
+            include_transaction_rules = bool(arguments.get("include_transaction_rules", False))
+            if (
+                not include_transaction_rules
+                and isinstance(transactions, dict)
+                and isinstance(transactions.get("transactionRules"), list)
+            ):
+                transactions = dict(transactions)
+                transactions.pop("transactionRules", None)
+
             # Convert date objects to strings before serialization
             transactions = convert_dates_to_strings(transactions)
             return [TextContent(type="text", text=json.dumps(transactions, indent=2))]

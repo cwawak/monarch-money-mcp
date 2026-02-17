@@ -5,7 +5,7 @@ An MCP (Model Context Protocol) server that provides access to Monarch Money fin
 ## Features
 
 - **Account Management**: List and retrieve account information
-- **Transaction Operations**: Get transactions with filtering by date range, accounts, and categories
+- **Transaction Operations**: Get transactions with filtering by date range, text search, accounts, and categories
 - **Budget Analysis**: Access budget data and spending insights
 - **Category Management**: List and manage transaction categories
 - **Goal Tracking**: Access financial goals and progress
@@ -67,8 +67,12 @@ List all accounts with their balances and details.
 Get transactions with optional filtering:
 - `start_date`: Filter transactions from this date (YYYY-MM-DD)
 - `end_date`: Filter transactions to this date (YYYY-MM-DD)
-- `account_ids`: List of account IDs to filter by
-- `category_ids`: List of category IDs to filter by
+- `search`: Filter by merchant/transaction text (for example, `youtube`)
+- `account_id`: Filter by one account ID (backwards-compatible)
+- `account_ids`: Filter by multiple account IDs
+- `category_id`: Filter by one category ID (backwards-compatible)
+- `category_ids`: Filter by multiple category IDs
+- `include_transaction_rules`: Include heavy `transactionRules` array (defaults to `false` to keep responses smaller)
 - `limit`: Maximum number of transactions to return
 
 ### `get_categories`
@@ -99,6 +103,21 @@ Use the get_accounts tool to see all my accounts and their current balances.
 ### Transaction Analysis
 ```
 Get all transactions from January 2024 using get_transactions with start_date "2024-01-01" and end_date "2024-01-31".
+```
+
+### Transaction Search (Low-Volume)
+```
+Use get_transactions with search "youtube", start_date "2024-01-01", end_date "2024-12-31", and limit 25.
+```
+
+### Include Raw Transaction Rules (Optional)
+```
+Use get_transactions with search "youtube", limit 25, and include_transaction_rules true.
+```
+
+### Singular and Plural ID Filters
+```
+Use get_transactions with account_id "acc_123" and category_ids ["cat_1", "cat_2"].
 ```
 
 ### Budget Tracking
