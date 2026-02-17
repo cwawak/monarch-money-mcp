@@ -95,6 +95,11 @@ def build_transaction_filters(arguments: Dict[str, Any]) -> Dict[str, Any]:
     """Build upstream transaction filters supported by monarchmoney."""
     filters: Dict[str, Any] = {}
 
+    has_start_date = "start_date" in arguments
+    has_end_date = "end_date" in arguments
+    if has_start_date != has_end_date:
+        raise ValueError("You must specify both start_date and end_date, not just one of them.")
+
     if "start_date" in arguments:
         filters["start_date"] = datetime.strptime(
             arguments["start_date"], "%Y-%m-%d"
@@ -589,7 +594,10 @@ async def list_tools() -> List[Tool]:
     return [
         Tool(
             name="get_accounts",
-            description="Retrieve all linked financial accounts",
+            description=(
+                "List financial accounts with balances and metadata. "
+                "Use this to answer account balance questions and to find account IDs for transaction filters."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {},
@@ -598,98 +606,143 @@ async def list_tools() -> List[Tool]:
         ),
         Tool(
             name="get_transactions",
-            description="Fetch transactions with optional filtering",
+            description=(
+                "Fetch transactions with full metadata and comprehensive filtering. "
+                "Use this for detailed analysis, exports, or workflows that require raw transaction fields. "
+                "Returns larger payloads than search_transactions. "
+                "Date rule: provide both start_date and end_date, or omit both."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "limit": {
                         "type": "integer",
-                        "description": "Maximum number of transactions to return",
+                        "description": (
+                            "Maximum number of transactions to return per page. "
+                            "Use smaller limits for quick checks and higher limits for broader analysis."
+                        ),
+                        "minimum": 1,
                         "default": 100
                     },
                     "offset": {
                         "type": "integer",
-                        "description": "Number of transactions to skip",
+                        "description": "Number of transactions to skip for pagination.",
+                        "minimum": 0,
                         "default": 0
                     },
                     "start_date": {
                         "type": "string",
-                        "description": "Start date in YYYY-MM-DD format"
+                        "description": (
+                            "Start date in YYYY-MM-DD format. "
+                            "Optional, but if provided then end_date is also required."
+                        )
                     },
                     "end_date": {
                         "type": "string",
-                        "description": "End date in YYYY-MM-DD format"
+                        "description": (
+                            "End date in YYYY-MM-DD format. "
+                            "Optional, but if provided then start_date is also required."
+                        )
                     },
                     "search": {
                         "type": "string",
-                        "description": "Filter by merchant/transaction text (for example, 'YouTube TV')"
+                        "description": (
+                            "Text search sent to Monarch for merchant/transaction matching. "
+                            "Example: 'youtube' often matches 'GOOGLE *YouTube TV'."
+                        )
                     },
                     "account_id": {
                         "type": "string",
-                        "description": "Filter by specific account ID"
+                        "description": (
+                            "Filter by one account ID (backwards-compatible singular form). "
+                            "Get account IDs from get_accounts."
+                        )
                     },
                     "account_ids": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Filter by one or more account IDs"
+                        "description": (
+                            "Filter by one or more account IDs. "
+                            "Get account IDs from get_accounts."
+                        )
                     },
                     "category_id": {
                         "type": "string",
-                        "description": "Filter by specific category ID"
+                        "description": (
+                            "Filter by one category ID (backwards-compatible singular form). "
+                            "Use category IDs from get_transaction_categories; names are not accepted."
+                        )
                     },
                     "category_ids": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Filter by one or more category IDs"
+                        "description": (
+                            "Filter by one or more category IDs. "
+                            "Use IDs from get_transaction_categories; category names are not accepted."
+                        )
                     },
                     "tag_ids": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Filter by one or more transaction tag IDs"
+                        "description": (
+                            "Filter by one or more transaction tag IDs from get_transaction_tags."
+                        )
                     },
                     "has_attachments": {
                         "type": "boolean",
-                        "description": "Filter for transactions with or without attachments"
+                        "description": "Upstream boolean filter for attachment presence."
                     },
                     "has_notes": {
                         "type": "boolean",
-                        "description": "Filter for transactions with or without notes"
+                        "description": "Upstream boolean filter for note presence."
                     },
                     "hidden_from_reports": {
                         "type": "boolean",
-                        "description": "Filter by hide-from-reports status"
+                        "description": "Upstream boolean filter for hide-from-reports status."
                     },
                     "is_split": {
                         "type": "boolean",
-                        "description": "Filter by split transaction status"
+                        "description": "Upstream boolean filter for split-transaction status."
                     },
                     "is_recurring": {
                         "type": "boolean",
-                        "description": "Filter by recurring transaction status"
+                        "description": "Upstream boolean filter for recurring status."
                     },
                     "imported_from_mint": {
                         "type": "boolean",
-                        "description": "Filter by imported-from-Mint status"
+                        "description": "Upstream boolean filter for imported-from-Mint status."
                     },
                     "synced_from_institution": {
                         "type": "boolean",
-                        "description": "Filter by institution-sync status"
+                        "description": "Upstream boolean filter for institution-sync status."
                     },
                     "merchant_id": {
                         "type": "string",
-                        "description": "Post-fetch filter: keep only transactions whose merchant.id matches this value"
+                        "description": (
+                            "Post-fetch filter: keep only transactions whose merchant.id matches this value. "
+                            "Applied after page fetch, so counts are page-local."
+                        )
                     },
                     "amount_min": {
                         "type": "number",
-                        "description": "Post-fetch filter: keep only transactions with amount >= this value"
+                        "description": (
+                            "Post-fetch filter: keep only transactions with amount >= this value. "
+                            "Applied after page fetch, so counts are page-local."
+                        )
                     },
                     "amount_max": {
                         "type": "number",
-                        "description": "Post-fetch filter: keep only transactions with amount <= this value"
+                        "description": (
+                            "Post-fetch filter: keep only transactions with amount <= this value. "
+                            "Applied after page fetch, so counts are page-local."
+                        )
                     },
                     "include_transaction_rules": {
                         "type": "boolean",
-                        "description": "Include transactionRules in response payload (default false to reduce output size)",
+                        "description": (
+                            "Include heavy transactionRules payload in the response. "
+                            "Defaults to false to reduce output size."
+                        ),
                         "default": False
                     }
                 },
@@ -698,103 +751,149 @@ async def list_tools() -> List[Tool]:
         ),
         Tool(
             name="search_transactions",
-            description="Search transactions and return concise projected rows",
+            description=(
+                "Quick transaction search with concise projected rows for lower token usage. "
+                "Use this for merchant lookups, spending-on-X questions, and exploratory queries. "
+                "Returns essential fields only; use get_transactions or get_transaction_details for full metadata. "
+                "Date rule: provide both start_date and end_date, or omit both."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "search": {
                         "type": "string",
-                        "description": "Search text (merchant/description); for example, 'youtube'"
+                        "description": (
+                            "Search text sent to Monarch for merchant/transaction matching. "
+                            "Example: 'youtube' often matches 'GOOGLE *YouTube TV'."
+                        )
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "Maximum number of transactions to return before projection",
+                        "description": (
+                            "Maximum number of transactions to fetch before concise projection."
+                        ),
+                        "minimum": 1,
                         "default": 25
                     },
                     "offset": {
                         "type": "integer",
-                        "description": "Number of transactions to skip",
+                        "description": "Number of transactions to skip for pagination.",
+                        "minimum": 0,
                         "default": 0
                     },
                     "start_date": {
                         "type": "string",
-                        "description": "Start date in YYYY-MM-DD format"
+                        "description": (
+                            "Start date in YYYY-MM-DD format. "
+                            "Optional, but if provided then end_date is also required."
+                        )
                     },
                     "end_date": {
                         "type": "string",
-                        "description": "End date in YYYY-MM-DD format"
+                        "description": (
+                            "End date in YYYY-MM-DD format. "
+                            "Optional, but if provided then start_date is also required."
+                        )
                     },
                     "account_id": {
                         "type": "string",
-                        "description": "Filter by specific account ID"
+                        "description": (
+                            "Filter by one account ID (backwards-compatible singular form). "
+                            "Get account IDs from get_accounts."
+                        )
                     },
                     "account_ids": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Filter by one or more account IDs"
+                        "description": (
+                            "Filter by one or more account IDs. "
+                            "Get account IDs from get_accounts."
+                        )
                     },
                     "category_id": {
                         "type": "string",
-                        "description": "Filter by specific category ID"
+                        "description": (
+                            "Filter by one category ID (backwards-compatible singular form). "
+                            "Use category IDs from get_transaction_categories; names are not accepted."
+                        )
                     },
                     "category_ids": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Filter by one or more category IDs"
+                        "description": (
+                            "Filter by one or more category IDs. "
+                            "Use IDs from get_transaction_categories; category names are not accepted."
+                        )
                     },
                     "tag_ids": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Filter by one or more transaction tag IDs"
+                        "description": (
+                            "Filter by one or more transaction tag IDs from get_transaction_tags."
+                        )
                     },
                     "has_attachments": {
                         "type": "boolean",
-                        "description": "Filter for transactions with or without attachments"
+                        "description": "Upstream boolean filter for attachment presence."
                     },
                     "has_notes": {
                         "type": "boolean",
-                        "description": "Filter for transactions with or without notes"
+                        "description": "Upstream boolean filter for note presence."
                     },
                     "hidden_from_reports": {
                         "type": "boolean",
-                        "description": "Filter by hide-from-reports status"
+                        "description": "Upstream boolean filter for hide-from-reports status."
                     },
                     "is_split": {
                         "type": "boolean",
-                        "description": "Filter by split transaction status"
+                        "description": "Upstream boolean filter for split-transaction status."
                     },
                     "is_recurring": {
                         "type": "boolean",
-                        "description": "Filter by recurring transaction status"
+                        "description": "Upstream boolean filter for recurring status."
                     },
                     "imported_from_mint": {
                         "type": "boolean",
-                        "description": "Filter by imported-from-Mint status"
+                        "description": "Upstream boolean filter for imported-from-Mint status."
                     },
                     "synced_from_institution": {
                         "type": "boolean",
-                        "description": "Filter by institution-sync status"
+                        "description": "Upstream boolean filter for institution-sync status."
                     },
                     "merchant_id": {
                         "type": "string",
-                        "description": "Post-fetch filter: keep only transactions whose merchant.id matches this value"
+                        "description": (
+                            "Post-fetch filter: keep only transactions whose merchant.id matches this value. "
+                            "Applied after page fetch, so counts are page-local."
+                        )
                     },
                     "amount_min": {
                         "type": "number",
-                        "description": "Post-fetch filter: keep only transactions with amount >= this value"
+                        "description": (
+                            "Post-fetch filter: keep only transactions with amount >= this value. "
+                            "Applied after page fetch, so counts are page-local."
+                        )
                     },
                     "amount_max": {
                         "type": "number",
-                        "description": "Post-fetch filter: keep only transactions with amount <= this value"
+                        "description": (
+                            "Post-fetch filter: keep only transactions with amount <= this value. "
+                            "Applied after page fetch, so counts are page-local."
+                        )
                     },
                     "include_transaction_rules": {
                         "type": "boolean",
-                        "description": "Include transactionRules in raw payload (default false)",
+                        "description": (
+                            "Include heavy transactionRules in the payload (usually unnecessary). "
+                            "Defaults to false to keep responses smaller."
+                        ),
                         "default": False
                     },
                     "include_raw": {
                         "type": "boolean",
-                        "description": "Include raw upstream payload alongside concise rows",
+                        "description": (
+                            "Include the raw upstream payload alongside concise projected rows."
+                        ),
                         "default": False
                     }
                 },
@@ -804,7 +903,10 @@ async def list_tools() -> List[Tool]:
         ),
         Tool(
             name="get_budgets",
-            description="Retrieve budget information",
+            description=(
+                "Get budget data with planned vs actual spending by category. "
+                "Use this for questions like 'am I on budget' or 'how much is left in this category'."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -822,7 +924,10 @@ async def list_tools() -> List[Tool]:
         ),
         Tool(
             name="get_cashflow",
-            description="Analyze cashflow data",
+            description=(
+                "Get cashflow data for income and expense analysis over time. "
+                "Use this for trend and period-over-period cashflow questions."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -840,7 +945,10 @@ async def list_tools() -> List[Tool]:
         ),
         Tool(
             name="get_transaction_categories",
-            description="List all transaction categories",
+            description=(
+                "List transaction categories and their IDs. "
+                "Use this before category filters because transaction tools expect category IDs, not category names."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {},
@@ -849,7 +957,10 @@ async def list_tools() -> List[Tool]:
         ),
         Tool(
             name="get_transaction_details",
-            description="Fetch detailed information for a single transaction",
+            description=(
+                "Get full details for one transaction by transaction_id. "
+                "Use this after search results when the user asks for deeper transaction context."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -869,7 +980,10 @@ async def list_tools() -> List[Tool]:
         ),
         Tool(
             name="get_transaction_tags",
-            description="List all available transaction tags",
+            description=(
+                "List available transaction tags and IDs. "
+                "Use this to discover tag_ids for transaction filtering."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {},
@@ -878,7 +992,10 @@ async def list_tools() -> List[Tool]:
         ),
         Tool(
             name="create_transaction",
-            description="Create a new transaction",
+            description=(
+                "Create a manual transaction entry. "
+                "Use negative amounts for expenses and positive amounts for inflows."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -913,7 +1030,10 @@ async def list_tools() -> List[Tool]:
         ),
         Tool(
             name="update_transaction",
-            description="Update an existing transaction",
+            description=(
+                "Update fields on an existing transaction by ID. "
+                "Use this for corrections to amount, description, category, date, or notes."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -948,7 +1068,10 @@ async def list_tools() -> List[Tool]:
         ),
         Tool(
             name="refresh_accounts",
-            description="Request a refresh of all account data from financial institutions",
+            description=(
+                "Request a refresh of linked accounts from financial institutions. "
+                "Use this when recent transactions or balances may not be synced yet."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {},

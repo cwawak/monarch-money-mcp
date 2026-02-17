@@ -67,6 +67,7 @@ List all accounts with their balances and details.
 Get transactions with optional filtering:
 - `start_date`: Filter transactions from this date (YYYY-MM-DD)
 - `end_date`: Filter transactions to this date (YYYY-MM-DD)
+- Date rule: provide both `start_date` and `end_date`, or omit both
 - `search`: Filter by merchant/transaction text (for example, `youtube`)
 - `account_id`: Filter by one account ID (backwards-compatible)
 - `account_ids`: Filter by multiple account IDs
@@ -91,6 +92,7 @@ Search transactions and return concise projected rows (lower-token output by def
 - Supports the same filter set as `get_transactions`
 - `search` is required
 - `include_raw`: optionally include raw upstream payload in the response
+- Date rule: provide both `start_date` and `end_date`, or omit both
 
 ### `get_transaction_categories`
 List all transaction categories.
