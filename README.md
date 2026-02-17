@@ -72,6 +72,17 @@ Get transactions with optional filtering:
 - `account_ids`: Filter by multiple account IDs
 - `category_id`: Filter by one category ID (backwards-compatible)
 - `category_ids`: Filter by multiple category IDs
+- `tag_ids`: Filter by one or more transaction tag IDs
+- `has_attachments`: Filter by attachment presence
+- `has_notes`: Filter by notes presence
+- `hidden_from_reports`: Filter by hide-from-reports status
+- `is_split`: Filter by split transaction status
+- `is_recurring`: Filter by recurring transaction status
+- `imported_from_mint`: Filter by imported-from-Mint status
+- `synced_from_institution`: Filter by institution-sync status
+- `merchant_id`: Post-fetch filter for exact `merchant.id`
+- `amount_min`: Post-fetch filter for minimum transaction amount (signed amount)
+- `amount_max`: Post-fetch filter for maximum transaction amount (signed amount)
 - `include_transaction_rules`: Include heavy `transactionRules` array (defaults to `false` to keep responses smaller)
 - `limit`: Maximum number of transactions to return
 
@@ -118,6 +129,16 @@ Use get_transactions with search "youtube", limit 25, and include_transaction_ru
 ### Singular and Plural ID Filters
 ```
 Use get_transactions with account_id "acc_123" and category_ids ["cat_1", "cat_2"].
+```
+
+### Boolean and Tag Filters
+```
+Use get_transactions with is_recurring true, has_notes false, and tag_ids ["tag_1", "tag_2"].
+```
+
+### Post-Fetch Filters
+```
+Use get_transactions with search "youtube", merchant_id "merchant_123", amount_min -100, and amount_max -20.
 ```
 
 ### Budget Tracking
